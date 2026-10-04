@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Prueba de conexión bancaria</title>
+<style>
+  :root{
+    --bg:#f2f2f7; --card:rgba(255,255,255,.72); --text:#1c1c1e; --text2:#6e6e73;
+    --line:rgba(60,60,67,.14); --ok:#248a3d; --bad:#d70015; --wait:#8e8e93; --blue:#007aff;
+    box-sizing:border-box;
+    padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#000; --card:rgba(44,44,46,.72); --text:#f5f5f7; --text2:#98989d;
+      --line:rgba(84,84,88,.5); --ok:#30d158; --bad:#ff453a; --blue:#0a84ff; }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);
+    font:17px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif}
+  main{max-width:560px;margin:0 auto;padding:28px 18px 40px}
+  h1{font-size:30px;line-height:1.15;font-weight:700;margin:8px 4px 6px;letter-spacing:-.02em}
+  .lead{color:var(--text2);margin:0 4px 22px;font-size:15px}
+  .list{background:var(--card);backdrop-filter:blur(24px) saturate(1.6);
+    -webkit-backdrop-filter:blur(24px) saturate(1.6);border-radius:22px;
+    border:.5px solid var(--line);overflow:hidden}
+  .row{display:flex;gap:12px;align-items:flex-start;padding:14px 16px}
+  .row+.row{border-top:.5px solid var(--line)}
+  .dot{flex:none;width:12px;height:12px;border-radius:50%;margin-top:6px;background:var(--wait)}
+  .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)}
+  .t{font-weight:600} .s{color:var(--text2);font-size:14px;word-break:break-word}
+  .verdict{margin:22px 4px 0;font-size:20px;font-weight:600;line-height:1.3;min-height:1.3em}
+  .verdict.ok{color:var(--ok)} .verdict.bad{color:var(--bad)}
+  .why{color:var(--text2);font-size:15px;margin:6px 4px 0}
+  .btns{display:flex;gap:10px;margin-top:26px}
+  button{flex:1;font:inherit;font-weight:600;border:0;border-radius:14px;padding:14px;
+    background:var(--blue);color:#fff}
+  button.sec{background:var(--card);color:var(--blue);border:.5px solid var(--line)}
+  button:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Prueba de conexión bancaria</h1>
+  <p class="lead">Comprueba si Mi Cartera puede hablar con Enable Banking directamente desde el iPhone. No envía ningún dato tuyo.</p>
+
+  <div class="list" id="list"></div>
+
+  <p class="verdict" id="verdict"></p>
+  <p class="why" id="why"></p>
+
+  <div class="btns">
+    <button id="run">Repetir prueba</button>
+    <button class="sec" id="copy">Copiar resultado</button>
+  </div>
+</main>
+
+<script>
+const API = 'https://api.enablebanking.com';
+const TESTS = [
+  { id:'net', name:'Conexión a internet', desc:'Llamada a una API pública que sí lo permite',
+    url:'https://api.coingecko.com/api/v3/ping', opts:{} },
+  { id:'simple', name:'Enable Banking, petición simple', desc:'Sin cabeceras extra',
+    url: API + '/aspsps?country=ES', opts:{} },
+  { id:'auth', name:'Enable Banking, petición con token', desc:'Como la haría la app de verdad',
+    url: API + '/aspsps?country=ES', opts:{ headers:{ Authorization:'Bearer prueba' } } }
+];
+const res = {};
+
+function render(){
+  document.getElementById('list').innerHTML = TESTS.map(t => {
+    const r = res[t.id];
+    const cls = !r ? '' : r.ok ? 'ok' : 'bad';
+    const s = !r ? 'Probando…' : r.detail;
+    return `<div class="row"><span class="dot ${cls}"></span>
+      <div><div class="t">${t.name}</div><div class="s">${t.desc}. ${s}</div></div></div>`;
+  }).join('');
+}
+
+async function probe(t){
+  try{
+    const r = await fetch(t.url, { ...t.opts, cache:'no-store' });
+    // Si llega aquí, el navegador nos deja leer la respuesta: CORS permitido.
+    // Un 401 es lo esperado en Enable Banking porque el token es falso.
+    res[t.id] = { ok:true, detail:`Respuesta legible, código ${r.status}.` };
+  }catch(e){
+    res[t.id] = { ok:false, detail:`Bloqueada por el navegador (${e.message || e.name}).` };
+  }
+  render();
+}
+
+async function run(){
+  for (const k in res) delete res[k];
+  setVerdict('', '', '');
+  render();
+  await Promise.all(TESTS.map(probe));
+  if (!res.net.ok){
+    setVerdict('bad', 'Sin conexión', 'Ni siquiera la API de control responde. Revisa la conexión y repite la prueba.');
+  } else if (res.auth.ok){
+    setVerdict('ok', 'Funciona sin servidor', 'Enable Banking acepta peticiones desde el navegador. Mi Cartera puede conectarse directamente.');
+  } else if (res.simple.ok){
+    setVerdict('bad', 'Funciona a medias', 'Acepta peticiones simples pero bloquea las que llevan token. Hará falta un Cloudflare Worker por usuario.');
+  } else {
+    setVerdict('bad', 'Bloqueado desde el navegador', 'Enable Banking no permite llamadas directas desde una web. Hará falta un Cloudflare Worker por usuario.');
+  }
+}
+
+function setVerdict(cls, title, why){
+  const v = document.getElementById('verdict');
+  v.className = 'verdict ' + cls; v.textContent = title;
+  document.getElementById('why').textContent = why;
+}
+
+document.getElementById('run').onclick = run;
+document.getElementById('copy').onclick = async () => {
+  const txt = TESTS.map(t => `${t.name}: ${res[t.id] ? res[t.id].detail : 'sin resultado'}`).join('\n')
+    + `\nOrigen: ${location.origin}\nNavegador: ${navigator.userAgent}`;
+  try{ await navigator.clipboard.writeText(txt); document.getElementById('copy').textContent = 'Copiado'; }
+  catch{ prompt('Copia el resultado:', txt); }
+  setTimeout(() => document.getElementById('copy').textContent = 'Copiar resultado', 1500);
+};
+run();
+</script>
+</body>
+</html>
