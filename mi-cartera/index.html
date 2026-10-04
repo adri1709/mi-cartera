@@ -209,6 +209,20 @@ input[type=date].field{line-height:50px}
 .welcome p.lead{color:var(--text2);font-size:15px;margin:0 4px 18px;line-height:1.45}
 
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+
+/* Banco */
+.banner{display:block;width:100%;text-align:left;border-radius:20px;padding:13px 16px;margin:0 0 14px}
+.banner b{display:block;font-size:15px;font-weight:600}
+.banner span{display:block;font-size:13px;color:var(--text2);margin-top:2px}
+.banner.bad b{color:var(--red)}
+.steps{margin:0 4px 12px 22px;color:var(--text2);font-size:14.5px;line-height:1.45}
+.steps li{margin-bottom:8px;padding-left:2px}
+.steps b{color:var(--text);font-weight:600}
+.mono{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12.5px;word-break:break-all;background:var(--glass);border:1px solid var(--stroke);border-radius:14px;padding:11px 14px;margin:0 0 10px}
+.adv{margin:2px 4px 12px;font-size:14px;color:var(--text2)}
+.adv summary{cursor:pointer;padding:6px 0}
+a.btn{text-decoration:none;color:inherit}
+.btn:disabled{opacity:.55}
 </style>
 </head>
 <body>
@@ -449,6 +463,7 @@ function vResumen(){
   const today = cap(new Date().toLocaleDateString('es-ES', {weekday:'long', day:'numeric', month:'long'}));
   return `
   <div class="top"><span class="date">${today}</span>${statusPill()}</div>
+  ${bankBanner()}
   <section class="hero">
     <p class="hero-label">Patrimonio total</p>
     <p class="hero-num">${eurBig(s.total)}</p>
@@ -490,6 +505,7 @@ function txRow(t){
     const k = CAT[t.cat] || CAT.otros_g; e = k.e; c = k.c;
     title = t.note || k.n;
     subt = t.note ? `${k.n}, ${PLACES[t.from || t.to].n.toLowerCase()}` : PLACES[t.from || t.to].n;
+    if (t.pending) subt += ', pendiente';
     amt = (t.type === 'gasto' ? '−' : '+') + eur(t.amount); ac = t.type === 'ingreso' ? 'up' : '';
   }
   return `<button class="row" data-act="edit" data-id="${t.id}">${ico(e, c)}<span class="mid"><span class="t">${esc(title)}</span><span class="s">${esc(subt)}</span></span><span class="r"><span class="v ${ac}">${amt}</span></span></button>`;
@@ -546,6 +562,7 @@ function vAjustes(){
   return `
   <div class="top"><span></span><span></span></div>
   <h1>Ajustes</h1>
+  ${vBankCard()}
   <section class="card glass">
     <h3>Precio del S&amp;P 500</h3>
     <p class="hint" style="margin:0 0 12px">Bitcoin se actualiza solo. Para el S&amp;P 500 necesitas una clave gratuita de Finnhub: regístrate en <a href="https://finnhub.io/register" target="_blank" rel="noopener">finnhub.io/register</a> y copia la API key del panel.</p>
@@ -632,7 +649,7 @@ function txSheet(preset){
       seg.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === btn));
     }));
     const del = b.querySelector('[data-del]');
-    if (del) del.onclick = () => { if (confirm('¿Eliminar este movimiento?')){ S.tx = S.tx.filter(t => t.id !== f.editId); save(); recordHistory(); closeSheet(); render(); toast('Movimiento eliminado'); } };
+    if (del) del.onclick = () => { if (confirm('¿Eliminar este movimiento?')){ const gone = S.tx.find(t => t.id === f.editId); if (gone && gone.bank) S.bank.skip[gone.bank] = gone.date; S.tx = S.tx.filter(t => t.id !== f.editId); save(); recordHistory(); closeSheet(); render(); toast('Movimiento eliminado'); } };
     autoQty(sh);
   };
   const redraw = sh => { sh.querySelector('.sbody').innerHTML = body(); sh.querySelector('#errMsg').textContent = ''; wire(sh); };
@@ -676,6 +693,8 @@ function saveTx(f){
     }
   }
   const editing = !!f.editId;
+  const old = editing ? S.tx.find(x => x.id === f.editId) : null;
+  if (old && old.bank){ t.bank = old.bank; t.merchant = old.merchant; if (old.pending) t.pending = true; if (t.type === old.type && t.cat) learnRule(old, t.cat); }
   S.tx = S.tx.filter(x => x.id !== t.id); S.tx.push(t); save(); recordHistory();
   closeSheet(); curMonth = t.date.slice(0, 7); render();
   toast(editing ? 'Movimiento actualizado' : (t.type === 'gasto' ? 'Gasto apuntado' : t.type === 'ingreso' ? 'Ingreso apuntado' : 'Movimiento apuntado'));
@@ -773,10 +792,396 @@ function importData(file){
       const d = JSON.parse(rd.result);
       if (!d || !d.init || !Array.isArray(d.tx)) throw 0;
       if (!confirm(`Esto sustituye todo lo que hay ahora por la copia (${d.tx.length} movimientos). ¿Seguir?`)) return;
-      S = Object.assign(fresh(), d); S.init = Object.assign(fresh().init, d.init); save(); render(); toast('Copia importada'); refreshPrices();
+      S = Object.assign(fresh(), d); S.init = Object.assign(fresh().init, d.init); S.bank = Object.assign(freshBank(), d.bank || {}); save(); render(); toast('Copia importada'); refreshPrices();
     } catch (e) { toast('Ese archivo no es una copia de Mi Cartera'); }
   };
   rd.readAsText(file);
+}
+
+
+/* ---------- Banco (Enable Banking a través del Worker) ---------- */
+const WORKER_DEFAULT = 'https://mi-cartera-banco.adrihermohigue.workers.dev';
+const CALLBACK_URL = new URL('callback.html', location.href).href;
+const EB_PANEL = 'https://enablebanking.com/cp/applications';
+const freshBank = () => ({appId:'', worker:'', aspsp:null, sessionId:'', accounts:[], validUntil:'', since:'', lastSync:0, seen:{}, skip:{}, rules:{}, pendingState:'', err:''});
+S.bank = Object.assign(freshBank(), S.bank || {});
+let bankKey = null, syncing = false;
+const bankOn = () => !!(S.bank.sessionId && S.bank.accounts.length);
+const workerUrl = () => (S.bank.worker || WORKER_DEFAULT).replace(/\/+$/, '');
+
+// La clave privada se guarda en IndexedDB como CryptoKey no exportable: ni la propia app puede leerla.
+function idb(){
+  return new Promise((ok, ko) => {
+    const r = indexedDB.open('mi-cartera', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('keys');
+    r.onsuccess = () => ok(r.result); r.onerror = () => ko(r.error);
+  });
+}
+async function keyGet(){ const db = await idb(); return new Promise(ok => { const q = db.transaction('keys').objectStore('keys').get('eb'); q.onsuccess = () => ok(q.result || null); q.onerror = () => ok(null); }); }
+async function keySet(k){ const db = await idb(); return new Promise((ok, ko) => { const tx = db.transaction('keys', 'readwrite'); k ? tx.objectStore('keys').put(k, 'eb') : tx.objectStore('keys').delete('eb'); tx.oncomplete = () => ok(); tx.onerror = () => ko(tx.error); }); }
+async function loadKey(){ try { bankKey = await keyGet(); } catch (e) { bankKey = null; } return bankKey; }
+
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const b64uStr = s => b64u(new TextEncoder().encode(s));
+function derLen(n){ if (n < 128) return [n]; const b = []; while (n){ b.unshift(n & 255); n >>= 8; } return [0x80 | b.length, ...b]; }
+function pkcs1to8(p1){
+  const alg = [0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00];
+  const oct = [0x04, ...derLen(p1.length), ...p1];
+  const body = [0x02, 0x01, 0x00, ...alg, ...oct];
+  return new Uint8Array([0x30, ...derLen(body.length), ...body]);
+}
+async function importPem(text){
+  const m = text.match(/-----BEGIN (RSA )?PRIVATE KEY-----([\s\S]+?)-----END (RSA )?PRIVATE KEY-----/);
+  if (!m) throw new Error('El archivo no es una clave privada.');
+  let der = Uint8Array.from(atob(m[2].replace(/\s+/g, '')), c => c.charCodeAt(0));
+  if (m[1]) der = pkcs1to8(der);
+  return crypto.subtle.importKey('pkcs8', der, {name:'RSASSA-PKCS1-v1_5', hash:'SHA-256'}, false, ['sign']);
+}
+async function jwt(appId, key){
+  const now = Math.floor(Date.now() / 1000);
+  const head = b64uStr(JSON.stringify({typ:'JWT', alg:'RS256', kid:appId}));
+  const body = b64uStr(JSON.stringify({iss:'enablebanking.com', aud:'api.enablebanking.com', iat:now, exp:now + 3600}));
+  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(head + '.' + body));
+  return head + '.' + body + '.' + b64u(sig);
+}
+async function eb(path, opts = {}, appId = S.bank.appId, key = bankKey){
+  if (!key) throw new Error('Falta la clave del banco en este iPhone. Vuelve a importarla en Ajustes.');
+  const ac = new AbortController(); const tm = setTimeout(() => ac.abort(), 25000);
+  let r;
+  try {
+    r = await fetch(workerUrl() + path, {
+      method: opts.method || 'GET', signal: ac.signal, cache: 'no-store',
+      headers: Object.assign({Authorization: 'Bearer ' + await jwt(appId, key)}, opts.body ? {'Content-Type': 'application/json'} : {}),
+      body: opts.body ? JSON.stringify(opts.body) : undefined
+    });
+  } catch (e) { throw new Error('No hay conexión con el banco ahora mismo.'); }
+  finally { clearTimeout(tm); }
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok){
+    const msg = d.message || d.detail || d.error || '';
+    const err = new Error(r.status === 401 ? 'Enable Banking no reconoce la clave o el ID de la aplicación.'
+      : r.status === 429 ? 'El banco limita las consultas. Prueba otra vez dentro de un rato.'
+      : (msg ? `El banco ha respondido: ${msg}` : `El banco ha respondido con un error ${r.status}.`));
+    err.status = r.status; err.data = d; throw err;
+  }
+  return d;
+}
+
+/* Categorías automáticas según el comercio. Las correcciones del usuario se aprenden en S.bank.rules. */
+const MERCHANT_RULES = [
+  ['super', /mercadona|carrefour|lidl|aldi|\bdia\b|consum|eroski|alcampo|hipercor|ahorramas|supercor|masymas|spar|bonpreu|condis|caprabo|froiz|gadis/],
+  ['coche', /repsol|cepsa|moeve|galp|\bbp\b|shell|petronor|ballenoil|plenoil|petroprix|\bitv\b|parking|aparcamiento|telpark|empark|norauto|midas|autopista|peaje/],
+  ['transporte', /renfe|\bmetro\b|\bemt\b|cabify|\buber\b(?! ?eats)|\bbolt\b|blablacar|alsa|\btram\b|ouigo|iryo|\btaxi\b|freenow/],
+  ['subs', /netflix|spotify|\bhbo\b|\bmax\b|disney|prime video|amazon prime|apple\.com|icloud|youtube|chatgpt|openai|anthropic|claude|dazn|movistar\+|filmin|crunchyroll|github|google one/],
+  ['comer', /mcdonald|burger king|telepizza|domino|glovo|just ?eat|uber ?eats|restaurante|\bbar\b|cafeter|starbucks|\bkfc\b|montaditos|taco bell|vips|goiko|foster|pizzer|kebab|sushi/],
+  ['ropa', /zara|primark|pull ?& ?bear|bershka|stradivarius|\bh ?& ?m\b|decathlon|\bnike\b|adidas|shein|mango|springfield|jack ?& ?jones|zalando|vinted/],
+  ['salud', /farmacia|clinica|clínica|dentist|optica|óptica|hospital|sanitas|adeslas|fisioterap/],
+  ['viajes', /ryanair|vueling|iberia|air europa|booking|airbnb|expedia|hotel|easyjet|volotea/],
+  ['ocio', /steam|playstation|\bpsn\b|xbox|nintendo|\bcine|yelmo|cinesa|kinepolis|ticketmaster|entradas|fnac|game\b/],
+  ['casa', /iberdrola|endesa|naturgy|totalenergies|holaluz|vodafone|movistar(?!\+)|orange|\bdigi\b|lowi|simyo|pepephone|\bo2\b|aguas|alquiler|ikea|leroy|bricomart|bauhaus|comunidad de propietarios/],
+  ['formacion', /udemy|coursera|offsec|offensive security|hack ?the ?box|tryhackme|platzi|domestika|universidad|academia/]
+];
+const INCOME_RULES = [
+  ['nomina', /nomina|nómina|payroll|salario/],
+  ['bounty', /hackerone|intigriti|bugcrowd|yeswehack|synack/],
+  ['bizum', /bizum/]
+];
+const merchantKey = s => String(s || '').toLowerCase().replace(/[0-9*#.,:/\\-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+function guessCat(type, text, all){
+  const k = merchantKey(text);
+  if (k && S.bank.rules[type + ':' + k]) return S.bank.rules[type + ':' + k];
+  const low = String(all || text || '').toLowerCase();
+  for (const [cat, re] of (type === 'ingreso' ? INCOME_RULES : MERCHANT_RULES)) if (re.test(low)) return cat;
+  return type === 'ingreso' ? 'otros_i' : 'otros_g';
+}
+function learnRule(oldTx, newCat){
+  if (!oldTx.bank || !oldTx.merchant || oldTx.cat === newCat) return;
+  const k = merchantKey(oldTx.merchant); if (!k) return;
+  S.bank.rules[oldTx.type + ':' + k] = newCat;
+  // Aplica la corrección a los demás movimientos del mismo comercio que siguen con la categoría automática.
+  for (const t of S.tx) if (t.bank && t.type === oldTx.type && t.id !== oldTx.id && merchantKey(t.merchant) === k && t.cat === oldTx.cat) t.cat = newCat;
+}
+
+function txParts(x){
+  const party = x.credit_debit_indicator === 'CRDT' ? (x.debtor && x.debtor.name) : (x.creditor && x.creditor.name);
+  const info = Array.isArray(x.remittance_information) ? x.remittance_information.join(' ') : (x.remittance_information || '');
+  const clean = v => String(v || '').replace(/\s+/g, ' ').trim();
+  return {party: clean(party), info: clean(info || x.bank_transaction_code?.description)};
+}
+function txText(x){ const p = txParts(x); return p.party || p.info; }
+function bankTxId(x, counter){
+  const id = x.transaction_id || x.entry_reference;
+  if (id) return 'eb:' + id;
+  const base = ['h', x.booking_date || x.value_date || x.transaction_date, x.transaction_amount?.amount, x.credit_debit_indicator, txText(x)].join('|');
+  counter[base] = (counter[base] || 0) + 1;
+  return base + '#' + counter[base];
+}
+const prettyMerchant = s => { const t = String(s || '').trim(); return t && t === t.toUpperCase() ? t.toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase()) : t; };
+
+async function fetchAllTx(uid, dateFrom){
+  const out = []; let ck = '', pages = 0;
+  do {
+    const q = new URLSearchParams({date_from: dateFrom}); if (ck) q.set('continuation_key', ck);
+    const d = await eb(`/accounts/${encodeURIComponent(uid)}/transactions?${q}`);
+    out.push(...(d.transactions || [])); ck = d.continuation_key || ''; pages++;
+  } while (ck && pages < 15);
+  return out;
+}
+function pickBalance(list){
+  const pref = ['ITAV', 'CLAV', 'XPCD', 'ITBD', 'CLBD', 'OPAV', 'OPBD'];
+  const bs = (list || []).filter(b => b.balance_amount && b.balance_amount.amount != null);
+  bs.sort((a, b) => (pref.indexOf(a.balance_type) + 99) % 99 - (pref.indexOf(b.balance_type) + 99) % 99);
+  return bs.length ? parseFloat(bs[0].balance_amount.amount) : null;
+}
+
+async function syncBank(manual){
+  if (syncing || !bankOn()) return;
+  if (!manual && Date.now() - S.bank.lastSync < 10 * 60000) return;
+  if (!bankKey && !(await loadKey())){ S.bank.err = 'Falta la clave del banco en este iPhone.'; save(); render(); return; }
+  if (S.bank.validUntil && new Date(S.bank.validUntil) < new Date()){ S.bank.err = 'El permiso del banco ha caducado.'; save(); render(); return; }
+  syncing = true; paintBank();
+  try {
+    const last = S.bank.lastSync ? iso(new Date(S.bank.lastSync - 10 * 86400000)) : S.bank.since;
+    const dateFrom = last < S.bank.since ? S.bank.since : last;
+    const counter = {}, pending = [], booked = [];
+    let balance = 0, haveBal = true;
+    for (const acc of S.bank.accounts){
+      const list = await fetchAllTx(acc, dateFrom);
+      for (const x of list){
+        const amt = Math.abs(parseFloat(x.transaction_amount?.amount));
+        if (!(amt > 0)) continue;
+        const date = x.booking_date || x.value_date || x.transaction_date || iso(new Date());
+        if (date < S.bank.since) continue;
+        const item = {x, amt, date, id: bankTxId(x, counter)};
+        (x.status === 'PDNG' ? pending : booked).push(item);
+      }
+      const bal = pickBalance((await eb(`/accounts/${encodeURIComponent(acc)}/balances`)).balances);
+      if (bal == null) haveBal = false; else balance += bal;
+    }
+    // Los pendientes se sustituyen en cada sincronización: el banco devuelve siempre la lista actual.
+    S.tx = S.tx.filter(t => !(t.bank && t.pending));
+    let added = 0;
+    const add = (it, isPending) => {
+      const type = it.x.credit_debit_indicator === 'CRDT' ? 'ingreso' : 'gasto';
+      const parts = txParts(it.x), text = parts.party || parts.info;
+      const t = {id: uid(), type, amount: r2(it.amt), note: prettyMerchant(text).slice(0, 120), date: it.date, ts: Date.now(), cat: guessCat(type, text, parts.party + ' ' + parts.info), bank: it.id, merchant: text};
+      if (type === 'gasto') t.from = 'cuenta'; else t.to = 'cuenta';
+      if (isPending) t.pending = true;
+      S.tx.push(t); added++;
+    };
+    for (const it of booked){ if (S.bank.seen[it.id] || S.bank.skip[it.id]) continue; S.bank.seen[it.id] = it.date; add(it, false); }
+    for (const it of pending){ if (S.bank.skip[it.id]) continue; add(it, true); }
+    // Limpia ids antiguos para que no crezca sin límite.
+    const cut = iso(new Date(Date.now() - 120 * 86400000));
+    for (const k in S.bank.seen) if (S.bank.seen[k] < cut) delete S.bank.seen[k];
+    if (haveBal){ const h = holdings(); S.init.cuenta += r2(balance) - h.cuenta; }
+    S.bank.lastSync = Date.now(); S.bank.err = '';
+    save(); recordHistory();
+    const newBooked = added - pending.filter(it => !S.bank.skip[it.id]).length;
+    if (manual) toast(newBooked > 0 ? `${newBooked} movimiento${newBooked > 1 ? 's' : ''} nuevo${newBooked > 1 ? 's' : ''} del banco` : 'Todo al día con el banco');
+  } catch (e) {
+    S.bank.err = e.message; save();
+    if (manual) toast(e.message);
+  } finally { syncing = false; render(); }
+}
+
+/* Avisos y tarjeta de ajustes */
+function daysLeft(){ return S.bank.validUntil ? Math.ceil((new Date(S.bank.validUntil) - Date.now()) / 86400000) : null; }
+function bankBanner(){
+  if (!bankOn()) return '';
+  const d = daysLeft();
+  if (d != null && d <= 0) return `<button class="banner glass bad" data-act="bankrenew"><b>El permiso del banco ha caducado</b><span>Toca para renovarlo. Hasta entonces no entran movimientos nuevos.</span></button>`;
+  if (d != null && d <= 7) return `<button class="banner glass" data-act="bankrenew"><b>El permiso del banco caduca en ${d} día${d > 1 ? 's' : ''}</b><span>Toca para renovarlo, tardas un minuto.</span></button>`;
+  if (S.bank.err) return `<button class="banner glass bad" data-act="banksync"><b>No se ha podido leer el banco</b><span>${esc(S.bank.err)} Toca para reintentar.</span></button>`;
+  return '';
+}
+function bankStatusLine(){
+  if (syncing) return 'Leyendo el banco…';
+  if (!S.bank.lastSync) return 'Aún sin sincronizar';
+  const m = Math.round((Date.now() - S.bank.lastSync) / 60000);
+  return 'Última lectura ' + (m < 1 ? 'ahora mismo' : m < 60 ? `hace ${m} min` : new Date(S.bank.lastSync).toLocaleString('es-ES', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}));
+}
+function vBankCard(){
+  if (!bankOn()){
+    return `<section class="card glass" id="bankCard">
+      <h3>Banco</h3>
+      <p class="hint" style="margin:0 0 12px">Conecta tu cuenta para que los gastos e ingresos se apunten solos y el saldo cuadre con el banco. Solo lectura: nadie puede mover tu dinero desde aquí.</p>
+      <button class="btn primary" data-act="bankwizard" style="width:100%">${S.bank.appId ? 'Continuar la conexión' : 'Conectar banco'}</button>
+    </section>`;
+  }
+  const d = daysLeft();
+  return `<section class="card glass" id="bankCard">
+    <h3>Banco</h3>
+    <div class="kv">
+      <div><span>Entidad</span><b>${esc(S.bank.aspsp?.name || '—')}</b></div>
+      <div><span>Permiso</span><b>${d == null ? '—' : d > 0 ? `${d} días más` : 'Caducado'}</b></div>
+    </div>
+    <p class="hint" style="margin:12px 4px 12px">${esc(bankStatusLine())}${S.bank.err && !syncing ? '. ' + esc(S.bank.err) : ''}</p>
+    <div class="btns"><button class="btn glass" data-act="banksync">Leer ahora</button><button class="btn glass" data-act="bankrenew">Renovar permiso</button></div>
+    <div class="btns" style="margin-top:10px"><button class="btn glass danger" data-act="bankoff">Desconectar</button></div>
+  </section>`;
+}
+function paintBank(){ const c = document.getElementById('bankCard'); if (c) c.outerHTML = vBankCard(); }
+
+/* Asistente de conexión */
+function copyBtn(text, label){ return `<button type="button" class="btn glass copy" data-copy="${esc(text)}">${esc(label)}</button>`; }
+function wireCopy(root){
+  root.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); const o = b.textContent; b.textContent = 'Copiado'; setTimeout(() => b.textContent = o, 1400); }
+    catch (e) { prompt('Copia esto:', b.dataset.copy); }
+  });
+}
+function bankWizard(step){
+  if (step == null) step = !S.bank.appId ? 1 : (bankKey ? 3 : 2);
+  const steps = {
+    1: () => `
+      <div class="welcome"><h2>Crea tu acceso</h2><p class="lead">Enable Banking es la entidad regulada que lee tu cuenta por ti. Es gratis para uso personal y solo tú tendrás acceso.</p></div>
+      <ol class="steps">
+        <li>Abre el panel de Enable Banking y entra con tu email. Te llegará un enlace para iniciar sesión, sin contraseña.</li>
+        <li>En <b>Add a new application</b>, elige <b>Production</b> y deja marcada la opción <b>Generate in the browser</b>.</li>
+        <li>Ponle de nombre <b>Mi Cartera</b>. En <b>Allowed redirect URLs</b> pega esta dirección:</li>
+      </ol>
+      <p class="mono">${esc(CALLBACK_URL)}</p>
+      <div class="btns" style="margin-bottom:14px">${copyBtn(CALLBACK_URL, 'Copiar dirección')}</div>
+      <ol class="steps" start="4">
+        <li>En los campos de privacidad y condiciones puedes poner cualquier enlace, como la página de Mi Cartera. Con uso personal no se revisan. Pon tu email donde pida uno.</li>
+        <li>Pulsa <b>Register</b>. Se descargará un archivo <b>.pem</b>: es tu clave, guárdalo en Archivos.</li>
+        <li>Abre la aplicación recién creada, pulsa <b>Activate by linking accounts</b>, elige tu banco y entra con tus claves.</li>
+      </ol>
+      <div class="btns"><a class="btn primary" href="${EB_PANEL}" target="_blank" rel="noopener">Abrir Enable Banking</a></div>
+      <div class="btns" style="margin-top:10px"><button type="button" class="btn glass" data-step="2">Ya lo tengo</button></div>`,
+    2: () => `
+      <div class="welcome"><h2>Importa tu clave</h2><p class="lead">Elige el archivo .pem que se descargó. La clave se guarda en este iPhone de forma que ni siquiera Mi Cartera puede leerla de vuelta, solo usarla para firmar.</p></div>
+      <button type="button" class="btn primary" id="pemBtn" style="width:100%">Elegir archivo .pem</button>
+      <input type="file" id="pemIn" hidden>
+      <p class="lbl" style="margin-top:16px">ID de la aplicación</p>
+      <input class="field" id="appIdIn" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Se rellena solo con el nombre del archivo" value="${esc(S.bank.appId)}">
+      <details class="adv"><summary>Avanzado</summary>
+        <p class="lbl" style="margin-top:12px">Tu propio Worker (opcional)</p>
+        <input class="field" id="workerIn" type="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="${esc(WORKER_DEFAULT)}" value="${esc(S.bank.worker)}">
+      </details>
+      <p class="hint" id="pemMsg">${bankKey ? 'Ya hay una clave guardada en este iPhone. Elige otra solo si quieres cambiarla.' : ''}</p>
+      <div class="btns"><button type="button" class="btn primary" id="checkBtn">Comprobar</button></div>
+      <div class="btns" style="margin-top:10px"><button type="button" class="btn glass" data-step="1">Volver</button></div>`,
+    3: () => `
+      <div class="welcome"><h2>Autoriza a Mi Cartera</h2><p class="lead">Ahora tu banco te pedirá permiso una vez más, esta vez para Mi Cartera. Al terminar se abrirá una página con un código.</p></div>
+      <ol class="steps">
+        <li>Pulsa <b>Ir al banco</b> y entra con tus claves.</li>
+        <li>En la página final, pulsa <b>Copiar código</b>.</li>
+        <li>Vuelve aquí y pulsa <b>Pegar código</b>.</li>
+      </ol>
+      <div class="btns"><button type="button" class="btn primary" id="goBank">Ir al banco</button></div>
+      <p class="lbl" style="margin-top:18px">Código</p>
+      <input class="field" id="codeIn" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Pégalo aquí">
+      <div class="btns"><button type="button" class="btn glass" id="pasteBtn">Pegar código</button><button type="button" class="btn primary" id="finishBtn">Terminar</button></div>
+      <p class="hint" id="authMsg" style="margin-top:12px"></p>`
+  };
+  openSheet(step === 3 && bankOn() ? 'Renovar permiso' : 'Conectar banco', steps[step](), () => closeSheet(), sh => {
+    const body = sh.querySelector('.sbody');
+    wireCopy(body);
+    body.querySelectorAll('[data-step]').forEach(b => b.onclick = () => { closeSheet(); setTimeout(() => bankWizard(+b.dataset.step), 400); });
+    const errEl = sh.querySelector('#errMsg');
+    if (step === 2){
+      let picked = null;
+      const msg = body.querySelector('#pemMsg');
+      body.querySelector('#pemBtn').onclick = () => body.querySelector('#pemIn').click();
+      body.querySelector('#pemIn').onchange = async e => {
+        const f = e.target.files[0]; if (!f) return;
+        try {
+          picked = await importPem(await f.text());
+          const id = (f.name.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i) || [])[0];
+          if (id) body.querySelector('#appIdIn').value = id;
+          msg.textContent = 'Clave leída. Pulsa Comprobar.'; errEl.textContent = '';
+        } catch (er) { picked = null; errEl.textContent = er.message || 'No se ha podido leer el archivo.'; }
+      };
+      body.querySelector('#checkBtn').onclick = async () => {
+        const appId = body.querySelector('#appIdIn').value.trim();
+        const w = body.querySelector('#workerIn').value.trim();
+        const key = picked || bankKey;
+        errEl.textContent = '';
+        if (!key) { errEl.textContent = 'Elige primero el archivo .pem.'; return; }
+        if (!/^[0-9a-f-]{36}$/i.test(appId)) { errEl.textContent = 'El ID de la aplicación tiene que ser como aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.'; return; }
+        if (w && !/^https:\/\//.test(w)) { errEl.textContent = 'La dirección del Worker tiene que empezar por https://'; return; }
+        const btn = body.querySelector('#checkBtn'); btn.textContent = 'Comprobando…'; btn.disabled = true;
+        const prevWorker = S.bank.worker; S.bank.worker = w;
+        try {
+          const app = await eb('/application', {}, appId, key);
+          if (app.environment && String(app.environment).toUpperCase() !== 'PRODUCTION') throw new Error('Esa aplicación es de Sandbox. Crea una de Production.');
+          if (app.active === false) throw new Error('La aplicación aún no está activa. En el panel pulsa Activate by linking accounts y vincula tu cuenta.');
+          if (Array.isArray(app.redirect_urls) && app.redirect_urls.every(u => typeof u === 'string') && !app.redirect_urls.includes(CALLBACK_URL)) throw new Error('Falta la dirección de vuelta en la aplicación. Añade en Allowed redirect URLs: ' + CALLBACK_URL);
+          if (picked){ await keySet(picked); bankKey = picked; }
+          S.bank.appId = appId; save();
+          closeSheet(); setTimeout(() => bankWizard(3), 400);
+        } catch (er) {
+          S.bank.worker = prevWorker;
+          errEl.textContent = er.message; btn.textContent = 'Comprobar'; btn.disabled = false;
+        }
+      };
+    }
+    if (step === 3){
+      const am = body.querySelector('#authMsg');
+      body.querySelector('#goBank').onclick = async e => {
+        const go = e.currentTarget;
+        errEl.textContent = ''; am.textContent = ''; go.textContent = 'Preparando…'; go.disabled = true;
+        try {
+          if (!bankKey) await loadKey();
+          const list = (await eb('/aspsps?country=ES&psu_type=personal')).aspsps || [];
+          let chosen = S.bank.aspsp ? list.find(a => a.name === S.bank.aspsp.name) : null;
+          chosen = chosen || list.find(a => /caixabank/i.test(a.name));
+          if (!chosen){
+            const pick = prompt('¿Cuál es tu banco? Escríbelo tal como aparece:\n' + list.map(a => a.name).slice(0, 60).join(', '));
+            chosen = list.find(a => a.name.toLowerCase() === String(pick || '').toLowerCase().trim());
+            if (!chosen) throw new Error('No encuentro ese banco en la lista.');
+          }
+          const maxS = chosen.maximum_consent_validity || 180 * 86400;
+          const valid = new Date(Date.now() + Math.min(maxS, 180 * 86400) * 1000 - 3600000).toISOString();
+          const state = uid() + uid();
+          S.bank.pendingState = state; S.bank.aspsp = {name: chosen.name, country: chosen.country || 'ES'}; save();
+          const r = await eb('/auth', {method:'POST', body:{access:{valid_until: valid}, aspsp: S.bank.aspsp, state, redirect_url: CALLBACK_URL, psu_type:'personal'}});
+          // Un enlace real que se toca: iOS no bloquea su apertura como haría con window.open tras una espera.
+          const a = document.createElement('a');
+          a.className = 'btn primary'; a.href = r.url; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Abrir ' + chosen.name;
+          go.replaceWith(a);
+          am.textContent = 'Cuando termines en el banco, copia el código y vuelve aquí.';
+        } catch (er) { go.textContent = 'Ir al banco'; go.disabled = false; errEl.textContent = er.message; }
+      };
+      body.querySelector('#pasteBtn').onclick = async () => {
+        try { body.querySelector('#codeIn').value = (await navigator.clipboard.readText()).trim(); }
+        catch (e) { errEl.textContent = 'No he podido leer el portapapeles. Mantén pulsado el campo y elige Pegar.'; }
+      };
+      body.querySelector('#finishBtn').onclick = async () => {
+        errEl.textContent = '';
+        const raw = body.querySelector('#codeIn').value.trim();
+        const m = raw.match(/^MC1\|([^|]+)\|(.+)$/);
+        const code = m ? m[2] : raw;
+        if (!code) { errEl.textContent = 'Pega primero el código.'; return; }
+        if (m && m[1] !== S.bank.pendingState) { errEl.textContent = 'Ese código es de un intento anterior. Pulsa Ir al banco otra vez.'; return; }
+        const btn = body.querySelector('#finishBtn'); btn.textContent = 'Conectando…'; btn.disabled = true;
+        try {
+          const s = await eb('/sessions', {method:'POST', body:{code}});
+          const accs = (s.accounts || []).map(a => typeof a === 'string' ? a : a.uid).filter(Boolean);
+          if (!accs.length) throw new Error('El banco no ha devuelto ninguna cuenta. Comprueba en el panel de Enable Banking que la tienes vinculada con Activate by linking accounts.');
+          const first = !bankOn();
+          S.bank.sessionId = s.session_id; S.bank.accounts = accs;
+          S.bank.validUntil = s.access?.valid_until || S.bank.validUntil;
+          S.bank.pendingState = ''; S.bank.err = '';
+          if (first){ S.bank.since = iso(new Date()); S.bank.lastSync = 0; }
+          save(); closeSheet(); render();
+          toast(first ? 'Banco conectado' : 'Permiso renovado');
+          syncBank(true);
+        } catch (er) { errEl.textContent = er.message; btn.textContent = 'Terminar'; btn.disabled = false; }
+      };
+    }
+  });
+}
+async function bankOff(){
+  if (!confirm('Se desconecta el banco. Los movimientos que ya entraron se quedan. ¿Seguro?')) return;
+  try { if (S.bank.sessionId) await eb('/sessions/' + encodeURIComponent(S.bank.sessionId), {method:'DELETE'}); } catch (e) {}
+  const keep = {rules: S.bank.rules, worker: S.bank.worker};
+  S.bank = Object.assign(freshBank(), keep);
+  S.tx = S.tx.filter(t => !t.pending);
+  try { await keySet(null); } catch (e) {}
+  bankKey = null; save(); render(); toast('Banco desconectado');
 }
 
 /* ---------- Eventos ---------- */
@@ -795,19 +1200,24 @@ $('#app').addEventListener('click', e => {
     txSheet({type:t.type, amount:String(t.amount).replace('.', ','), cat:t.cat || 'super', place:t.from || t.to || 'cuenta', from:t.type === 'transfer' ? t.from : 'cuenta', to:t.type === 'transfer' ? t.to : 'sp', qty:t.btc ? String(t.btc).replace('.', ',') : '', qtyTouched:!!t.btc, note:t.note || '', date:t.date, editId:t.id});
   }
   else if (a === 'savekey'){ S.key = $('#keyIn').value.trim(); save(); toast(S.key ? 'Clave guardada, probando…' : 'Clave borrada'); refreshPrices(true); }
+  else if (a === 'bankwizard') bankWizard();
+  else if (a === 'banksync') syncBank(true);
+  else if (a === 'bankrenew') bankWizard(3);
+  else if (a === 'bankoff') bankOff();
   else if (a === 'export') exportData();
   else if (a === 'import'){ const fi = $('#fileIn'); fi.onchange = () => fi.files[0] && importData(fi.files[0]); fi.click(); }
   else if (a === 'onboard') onboardSheet();
-  else if (a === 'wipe'){ if (confirm('Se borran todos tus saldos y movimientos de este iPhone. ¿Seguro?')){ localStorage.removeItem(STORE); S = fresh(); render(); onboardSheet(); } }
+  else if (a === 'wipe'){ if (confirm('Se borran todos tus saldos y movimientos de este iPhone. ¿Seguro?')){ localStorage.removeItem(STORE); S = fresh(); S.bank = freshBank(); keySet(null).catch(() => {}); bankKey = null; render(); onboardSheet(); } }
 });
 
 let timer;
 function startAuto(){ clearInterval(timer); timer = setInterval(() => { if (document.visibilityState === 'visible') refreshPrices(); }, 60000); }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible'){ refreshPrices(); } });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible'){ refreshPrices(); syncBank(); } });
 
 render();
 if (!S.setup) onboardSheet();
 refreshPrices(); startAuto();
+loadKey().then(() => { if (bankOn()) syncBank(); render(); });
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>

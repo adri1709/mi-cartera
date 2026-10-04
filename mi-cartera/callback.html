@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>Mi Cartera: código del banco</title>
+<style>
+  :root{--bg:#05070f;--text:#f5f7fb;--text2:rgba(235,240,255,.64);--glass:rgba(255,255,255,.075);--stroke:rgba(255,255,255,.15);--blue:#0a84ff;--green:#30d158;--red:#ff453a;
+    color-scheme:dark;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+  @media (prefers-color-scheme: light){:root{--bg:#e9eef6;--text:#0b1220;--text2:rgba(15,25,45,.62);--glass:rgba(255,255,255,.6);--stroke:rgba(255,255,255,.9);--blue:#007aff;--green:#28a745;--red:#ff3b30;color-scheme:light}}
+  *{box-sizing:border-box;margin:0}
+  html,body{background:var(--bg);color:var(--text);font:16px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif}
+  main{max-width:480px;margin:0 auto;padding:48px 22px}
+  h1{font-family:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,sans-serif;font-size:30px;line-height:1.15;margin:0 0 10px}
+  p{color:var(--text2);font-size:15.5px;margin:0 0 22px}
+  button{width:100%;height:54px;border:0;border-radius:999px;background:var(--blue);color:#fff;font:inherit;font-weight:600;font-size:17px}
+  button:focus-visible{outline:3px solid var(--blue);outline-offset:3px}
+  .ok h1{color:var(--green)} .bad h1{color:var(--red)}
+  .then{margin-top:22px;font-size:14px}
+</style>
+</head>
+<body>
+<main id="m"></main>
+<script>
+const q = new URLSearchParams(location.search);
+const code = q.get('code'), state = q.get('state') || '', err = q.get('error'), desc = q.get('error_description');
+const m = document.getElementById('m');
+// Quitamos el código de la barra de direcciones y del historial.
+history.replaceState(null, '', location.pathname);
+if (code){
+  const payload = `MC1|${state}|${code}`;
+  m.innerHTML = `<h1>Ya casi está</h1>
+    <p>Tu banco ha dado permiso a Mi Cartera. Copia el código y pégalo en la app.</p>
+    <button id="c">Copiar código</button>
+    <p class="then">Después vuelve a Mi Cartera desde la pantalla de inicio y pulsa Pegar código. El código solo sirve una vez y caduca en unos minutos.</p>`;
+  const b = document.getElementById('c');
+  b.onclick = async () => {
+    try { await navigator.clipboard.writeText(payload); m.className = 'ok'; b.textContent = 'Copiado'; }
+    catch (e) { prompt('Copia este código:', payload); }
+  };
+} else {
+  m.className = 'bad';
+  const text = err === 'access_denied' ? 'Has cancelado el permiso en el banco.' : (desc || err || 'No ha llegado ningún código del banco.');
+  m.innerHTML = `<h1>No se ha conectado</h1><p></p><p class="then">Vuelve a Mi Cartera y pulsa Ir al banco otra vez.</p>`;
+  m.querySelector('p').textContent = text;
+}
+</script>
+</body>
+</html>

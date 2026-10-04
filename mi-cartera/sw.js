@@ -1,5 +1,5 @@
 // Caché de la app para que abra sin conexión. Las APIs de precios nunca se cachean aquí.
-const CACHE = 'mi-cartera-v2';
+const CACHE = 'mi-cartera-v3';
 const SHELL = ['./', './index.html', './manifest.json', './icon-180.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
