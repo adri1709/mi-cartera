@@ -1129,7 +1129,7 @@ function bankWizard(step){
         try {
           if (!bankKey) await loadKey();
           banks = ((await eb('/aspsps?country=ES&psu_type=personal')).aspsps || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'es'));
-          const pre = (S.bank.aspsp && banks.find(a => a.name === S.bank.aspsp.name)) || banks.find(a => /imagin/i.test(a.name)) || null;
+          const pre = (S.bank.aspsp && banks.find(a => a.name === S.bank.aspsp.name)) || null;
           sel.innerHTML = (pre ? '' : '<option value="">Elige tu banco</option>') + banks.map((a, i) => `<option value="${i}" ${a === pre ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
         } catch (er) { sel.innerHTML = '<option value="">No se ha podido cargar la lista</option>'; errEl.textContent = er.message; }
       })();
