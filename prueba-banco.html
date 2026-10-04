@@ -33,6 +33,11 @@
   .verdict.ok{color:var(--ok)} .verdict.bad{color:var(--bad)}
   .why{color:var(--text2);font-size:15px;margin:6px 4px 0}
   .btns{display:flex;gap:10px;margin-top:26px}
+  .field{display:block;margin:0 0 18px}
+  .field span{display:block;color:var(--text2);font-size:13px;margin:0 16px 6px}
+  .field input{width:100%;font:inherit;font-size:16px;color:var(--text);background:var(--card);
+    border:.5px solid var(--line);border-radius:14px;padding:13px 16px;outline:none}
+  .field input:focus{border-color:var(--blue)}
   button{flex:1;font:inherit;font-weight:600;border:0;border-radius:14px;padding:14px;
     background:var(--blue);color:#fff}
   button.sec{background:var(--card);color:var(--blue);border:.5px solid var(--line)}
@@ -42,7 +47,13 @@
 <body>
 <main>
   <h1>Prueba de conexión bancaria</h1>
-  <p class="lead">Comprueba si Mi Cartera puede hablar con Enable Banking directamente desde el iPhone. No envía ningún dato tuyo.</p>
+  <p class="lead">Comprueba si Mi Cartera puede hablar con Enable Banking desde el iPhone, directamente o a través de tu Worker. No envía ningún dato tuyo.</p>
+
+  <label class="field">
+    <span>Dirección de tu Worker</span>
+    <input id="w" type="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false"
+      placeholder="https://mi-cartera-banco.tu-nombre.workers.dev">
+  </label>
 
   <div class="list" id="list"></div>
 
@@ -63,8 +74,12 @@ const TESTS = [
   { id:'simple', name:'Enable Banking, petición simple', desc:'Sin cabeceras extra',
     url: API + '/aspsps?country=ES', opts:{} },
   { id:'auth', name:'Enable Banking, petición con token', desc:'Como la haría la app de verdad',
-    url: API + '/aspsps?country=ES', opts:{ headers:{ Authorization:'Bearer prueba' } } }
+    url: API + '/aspsps?country=ES', opts:{ headers:{ Authorization:'Bearer prueba' } } },
+  { id:'worker', name:'A través de tu Worker', desc:'Petición con token pasando por el Worker',
+    url: null, opts:{ headers:{ Authorization:'Bearer prueba' } } }
 ];
+const wInput = document.getElementById('w');
+wInput.value = new URLSearchParams(location.search).get('w') || '';
 const res = {};
 
 function render(){
@@ -78,10 +93,15 @@ function render(){
 }
 
 async function probe(t){
+  if (t.id === 'worker'){
+    const base = wInput.value.trim().replace(/\/+$/, '');
+    if (!base){ res[t.id] = { ok:false, skip:true, detail:'Escribe arriba la dirección del Worker y repite la prueba.' }; render(); return; }
+    t.url = base + '/aspsps?country=ES';
+  }
   try{
     const r = await fetch(t.url, { ...t.opts, cache:'no-store' });
-    // Si llega aquí, el navegador nos deja leer la respuesta: CORS permitido.
-    // Un 401 es lo esperado en Enable Banking porque el token es falso.
+    // Si llega aquí, el navegador deja leer la respuesta: CORS permitido.
+    // Un 401 es lo esperado porque el token es falso.
     res[t.id] = { ok:true, detail:`Respuesta legible, código ${r.status}.` };
   }catch(e){
     res[t.id] = { ok:false, detail:`Bloqueada por el navegador (${e.message || e.name}).` };
@@ -96,12 +116,14 @@ async function run(){
   await Promise.all(TESTS.map(probe));
   if (!res.net.ok){
     setVerdict('bad', 'Sin conexión', 'Ni siquiera la API de control responde. Revisa la conexión y repite la prueba.');
+  } else if (res.worker.ok){
+    setVerdict('ok', 'Funciona con el Worker', 'Enable Banking responde a través de tu Worker. Este es el camino para Mi Cartera.');
+  } else if (!res.worker.skip){
+    setVerdict('bad', 'El Worker no responde', 'Revisa que la dirección sea la del Worker y que hayas pulsado Deploy después de pegar el código.');
   } else if (res.auth.ok){
     setVerdict('ok', 'Funciona sin servidor', 'Enable Banking acepta peticiones desde el navegador. Mi Cartera puede conectarse directamente.');
-  } else if (res.simple.ok){
-    setVerdict('bad', 'Funciona a medias', 'Acepta peticiones simples pero bloquea las que llevan token. Hará falta un Cloudflare Worker por usuario.');
   } else {
-    setVerdict('bad', 'Bloqueado desde el navegador', 'Enable Banking no permite llamadas directas desde una web. Hará falta un Cloudflare Worker por usuario.');
+    setVerdict('bad', 'Bloqueado desde el navegador', 'Enable Banking no permite llamadas directas desde una web. Escribe arriba la dirección del Worker y repite la prueba.');
   }
 }
 
