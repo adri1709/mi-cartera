@@ -46,6 +46,7 @@
 html{background:var(--bg);scroll-padding-top:env(safe-area-inset-top,0px);-webkit-text-size-adjust:100%}
 body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:16px;line-height:1.35;min-height:100%;-webkit-font-smoothing:antialiased;overscroll-behavior-y:none}
 button,input,select{font:inherit;color:inherit}
+select.field{background-image:none}
 button{background:none;border:0;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
 button:focus-visible,input:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 .num{font-variant-numeric:tabular-nums}
@@ -1070,6 +1071,8 @@ function bankWizard(step){
         <li>En la página final, pulsa <b>Copiar código</b>.</li>
         <li>Vuelve aquí y pulsa <b>Pegar código</b>.</li>
       </ol>
+      <p class="lbl">Tu banco</p>
+      <select class="field" id="bankSel" aria-label="Tu banco"><option value="">Cargando bancos…</option></select>
       <div class="btns"><button type="button" class="btn primary" id="goBank">Ir al banco</button></div>
       <p class="lbl" style="margin-top:18px">Código</p>
       <input class="field" id="codeIn" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Pégalo aquí">
@@ -1120,19 +1123,23 @@ function bankWizard(step){
     }
     if (step === 3){
       const am = body.querySelector('#authMsg');
-      body.querySelector('#goBank').onclick = async e => {
-        const go = e.currentTarget;
-        errEl.textContent = ''; am.textContent = ''; go.textContent = 'Preparando…'; go.disabled = true;
+      const sel = body.querySelector('#bankSel');
+      let banks = [];
+      (async () => {
         try {
           if (!bankKey) await loadKey();
-          const list = (await eb('/aspsps?country=ES&psu_type=personal')).aspsps || [];
-          let chosen = S.bank.aspsp ? list.find(a => a.name === S.bank.aspsp.name) : null;
-          chosen = chosen || list.find(a => /caixabank/i.test(a.name));
-          if (!chosen){
-            const pick = prompt('¿Cuál es tu banco? Escríbelo tal como aparece:\n' + list.map(a => a.name).slice(0, 60).join(', '));
-            chosen = list.find(a => a.name.toLowerCase() === String(pick || '').toLowerCase().trim());
-            if (!chosen) throw new Error('No encuentro ese banco en la lista.');
-          }
+          banks = ((await eb('/aspsps?country=ES&psu_type=personal')).aspsps || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'es'));
+          const pre = (S.bank.aspsp && banks.find(a => a.name === S.bank.aspsp.name)) || banks.find(a => /imagin/i.test(a.name)) || null;
+          sel.innerHTML = (pre ? '' : '<option value="">Elige tu banco</option>') + banks.map((a, i) => `<option value="${i}" ${a === pre ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
+        } catch (er) { sel.innerHTML = '<option value="">No se ha podido cargar la lista</option>'; errEl.textContent = er.message; }
+      })();
+      body.querySelector('#goBank').onclick = async e => {
+        const go = e.currentTarget;
+        const chosen = banks[+sel.value];
+        errEl.textContent = '';
+        if (sel.value === '' || !chosen){ errEl.textContent = 'Elige primero tu banco en la lista.'; return; }
+        am.textContent = ''; go.textContent = 'Preparando…'; go.disabled = true;
+        try {
           const maxS = chosen.maximum_consent_validity || 180 * 86400;
           const valid = new Date(Date.now() + Math.min(maxS, 180 * 86400) * 1000 - 3600000).toISOString();
           const state = uid() + uid();
@@ -1141,7 +1148,7 @@ function bankWizard(step){
           // Un enlace real que se toca: iOS no bloquea su apertura como haría con window.open tras una espera.
           const a = document.createElement('a');
           a.className = 'btn primary'; a.href = r.url; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Abrir ' + chosen.name;
-          go.replaceWith(a);
+          go.replaceWith(a); sel.disabled = true;
           am.textContent = 'Cuando termines en el banco, copia el código y vuelve aquí.';
         } catch (er) { go.textContent = 'Ir al banco'; go.disabled = false; errEl.textContent = er.message; }
       };
